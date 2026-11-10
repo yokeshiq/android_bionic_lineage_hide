@@ -41,7 +41,6 @@
 #include "private/bionic_fortify.h"
 #include "private/ErrnoRestorer.h"
 #include "private/ScopedPthreadMutexLocker.h"
-#include "custom_rom_hide.h"
 
 extern "C" int __getdents64(unsigned int, dirent*, unsigned int);
 
@@ -117,22 +116,17 @@ static bool __fill_DIR(DIR* d) {
 }
 
 static dirent* __readdir_locked(DIR* d) {
-  while (true) {
-    if (d->available_bytes_ == 0 && !__fill_DIR(d)) {
-      return nullptr;
-    }
-
-    dirent* entry = d->next_;
-    d->next_ = reinterpret_cast<dirent*>(reinterpret_cast<char*>(entry) + entry->d_reclen);
-    d->available_bytes_ -= entry->d_reclen;
-    // The directory entry offset uses 0, 1, 2 instead of real file offset,
-    // so the value range of long type is enough.
-    d->current_pos_ = static_cast<long>(entry->d_off);
-
-    if (!custom_rom_hide_should_filter_dirent(d->fd_, entry->d_name)) {
-      return entry;
-    }
+  if (d->available_bytes_ == 0 && !__fill_DIR(d)) {
+    return nullptr;
   }
+
+  dirent* entry = d->next_;
+  d->next_ = reinterpret_cast<dirent*>(reinterpret_cast<char*>(entry) + entry->d_reclen);
+  d->available_bytes_ -= entry->d_reclen;
+  // The directory entry offset uses 0, 1, 2 instead of real file offset,
+  // so the value range of long type is enough.
+  d->current_pos_ = static_cast<long>(entry->d_off);
+  return entry;
 }
 
 dirent* readdir(DIR* d) {
