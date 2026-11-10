@@ -30,6 +30,7 @@
 #include <sys/statfs.h>
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <private/android_filesystem_config.h>
 
@@ -198,18 +199,31 @@ static bool compute_app_process() {
     return true;
 }
 
+static _Atomic(unsigned) g_app_cache_generation = 0;
+
+static void custom_rom_hide_fork_child() {
+    atomic_fetch_add_explicit(&g_app_cache_generation, 1u, memory_order_release);
+}
+
+static void custom_rom_hide_register_atfork() {
+    pthread_atfork(nullptr, nullptr, custom_rom_hide_fork_child);
+}
+
 static bool is_app_process() {
-    static _Atomic(pid_t) cached_pid = -1;
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    static _Atomic(unsigned) cached_generation = static_cast<unsigned>(-1);
     static _Atomic(bool) cached_value = false;
 
-    pid_t cur = getpid();
-    if (atomic_load_explicit(&cached_pid, memory_order_acquire) == cur) {
+    pthread_once(&once, custom_rom_hide_register_atfork);
+
+    unsigned generation = atomic_load_explicit(&g_app_cache_generation, memory_order_acquire);
+    if (atomic_load_explicit(&cached_generation, memory_order_acquire) == generation) {
         return atomic_load_explicit(&cached_value, memory_order_acquire);
     }
 
     bool result = compute_app_process();
     atomic_store_explicit(&cached_value, result, memory_order_release);
-    atomic_store_explicit(&cached_pid, cur, memory_order_release);
+    atomic_store_explicit(&cached_generation, generation, memory_order_release);
     return result;
 }
 
@@ -719,18 +733,15 @@ int custom_rom_hide_filter_vintf(const char* path) {
 
 static const char* const kSpoofedEmptyProps[] = {
     "ro.infinity.version", "ro.lineage.version", "ro.lineage.build.version", "ro.cm.build.version",
-    "ro.modversion", "init.svc_debug_pid.adb_root",
-    "init.svc.adb_root", "service.adb.root", nullptr
+    "ro.modversion", "init.svc_debug_pid.adb_root", "init.svc_debug_pid.adbd",
+    "init.svc.adb_root", "init.svc.adbd", "service.adb.root", nullptr
 };
 
 struct PropOverride { const char* name; const char* value; };
 static const PropOverride kSpoofedValueProps[] = {
-    {"ro.debuggable", "0"},
-    {"ro.build.type", "user"},
-    {"ro.build.tags", "release-keys"},
-    {"ro.secure", "1"},
-    {"ro.adb.secure", "1"},
-    {nullptr, nullptr}
+    {"ro.debuggable", "0"}, {"ro.build.type", "user"}, {"ro.build.tags", "release-keys"},
+    {"ro.secure", "1"}, {"ro.adb.secure", "1"}, {"persist.sys.usb.config", "mtp"},
+    {"sys.usb.config", "mtp"}, {nullptr, nullptr}
 };
 
 bool custom_rom_hide_should_spoof_prop(const char* name, char* value) {
