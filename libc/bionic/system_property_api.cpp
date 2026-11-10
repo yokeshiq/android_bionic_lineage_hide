@@ -32,10 +32,7 @@
 #include <system_properties/prop_area.h>
 #include <system_properties/system_properties.h>
 
-#include <string.h>
-
 #include "private/bionic_defs.h"
-#include "custom_rom_hide.h"
 
 static SystemProperties system_properties;
 static_assert(__is_trivially_constructible(SystemProperties),
@@ -69,39 +66,12 @@ uint32_t __system_property_area_serial() {
 
 __BIONIC_WEAK_FOR_NATIVE_BRIDGE
 const prop_info* __system_property_find(const char* name) {
-  if (custom_rom_hide_should_hide_prop(name)) {
-    return nullptr;
-  }
   return system_properties.Find(name);
 }
 
 __BIONIC_WEAK_FOR_NATIVE_BRIDGE
 int __system_property_read(const prop_info* pi, char* name, char* value) {
-  int len = system_properties.Read(pi, name, value);
-  if (name && custom_rom_hide_should_spoof_prop(name, value)) {
-    return strlen(value);
-  }
-  return len;
-}
-
-struct ReadCallbackOverrideCtx {
-    void (*original_callback)(void* cookie, const char* name, const char* value, uint32_t serial);
-    void* original_cookie;
-};
-
-static void read_callback_intercept(void* cookie, const char* name, const char* value,
-                                    uint32_t serial) {
-    auto* ctx = static_cast<ReadCallbackOverrideCtx*>(cookie);
-    if (custom_rom_hide_should_hide_prop(name)) {
-        ctx->original_callback(ctx->original_cookie, name, "", serial);
-        return;
-    }
-    const char* override_val = custom_rom_hide_get_prop_override(name);
-    if (override_val) {
-        ctx->original_callback(ctx->original_cookie, name, override_val, serial);
-    } else {
-        ctx->original_callback(ctx->original_cookie, name, value, serial);
-    }
+  return system_properties.Read(pi, name, value);
 }
 
 __BIONIC_WEAK_FOR_NATIVE_BRIDGE
@@ -109,17 +79,12 @@ void __system_property_read_callback(const prop_info* pi,
                                      void (*callback)(void* cookie, const char* name,
                                                       const char* value, uint32_t serial),
                                      void* cookie) {
-  ReadCallbackOverrideCtx ctx{callback, cookie};
-  return system_properties.ReadCallback(pi, read_callback_intercept, &ctx);
+  return system_properties.ReadCallback(pi, callback, cookie);
 }
 
 __BIONIC_WEAK_FOR_NATIVE_BRIDGE
 int __system_property_get(const char* name, char* value) {
-  int len = system_properties.Get(name, value);
-  if (custom_rom_hide_should_spoof_prop(name, value)) {
-    return strlen(value);
-  }
-  return len;
+  return system_properties.Get(name, value);
 }
 
 __BIONIC_WEAK_FOR_NATIVE_BRIDGE
