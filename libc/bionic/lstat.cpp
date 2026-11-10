@@ -39,10 +39,6 @@ int lstat(const char* path, struct stat* sb) {
     errno = ENOENT;
     return -1;
   }
-  int res = fstatat(AT_FDCWD, path, sb, AT_SYMLINK_NOFOLLOW);
-  if (res == 0) {
-    custom_rom_hide_spoof_stat(path, sb);
-  }
-  return res;
+  return fstatat(AT_FDCWD, path, sb, AT_SYMLINK_NOFOLLOW);
 }
 __strong_alias(lstat64, lstat);
