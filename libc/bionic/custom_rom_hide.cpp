@@ -115,70 +115,8 @@ static inline ssize_t raw_readlinkat(const char* path, char* buf, size_t size) {
     return syscall(__NR_readlinkat, AT_FDCWD, path, buf, size);
 }
 
-static const char* const kAllowlistedPackages[] = {
-    "com.infinity.updater",
-    "com.tencent.tmgp.sgame",
-    "com.tencent.tmgp.sgamece",
-    "com.tencent.tmgp.pubgmhd",
-    "com.tencent.ig",
-    "com.pubg.krmobile",
-    "com.vng.pubgmobile",
-    "com.rekoo.pubgm",
-    "com.dts.freefireth",
-    "com.dts.freefiremax",
-    "com.tencent.tmgp.cf",
-    "com.tencent.tmgp.speedmobile",
-    "com.tencent.KiHan",
-    "com.tencent.jkchess",
-    "com.tencent.lolm",
-    "com.riotgames.league.wildrift",
-    "com.tencent.mf.uam",
-    "com.proximabeta.mf.uamo",
-    "com.tencent.tmgp.dnf",
-    "com.garena.game.codm",
-    "com.activision.callofduty.shooter",
-    "com.tencent.tmgp.wuxia",
-    "com.tencent.tmgp.djsy",
-    "com.tencent.lzhx",
-    "com.tencent.gate",
-    "com.tencent.tmgp.codd",
-    nullptr
-};
-
-static bool compute_allowlisted() {
-    int fd = raw_openat("/proc/self/cmdline", O_RDONLY);
-    if (fd < 0) return false;
-
-    char cmdline[256];
-    ssize_t n = raw_read(fd, cmdline, sizeof(cmdline) - 1);
-    raw_close(fd);
-    if (n <= 0) return false;
-    cmdline[n] = '\0';
-
-    char* colon = strchr(cmdline, ':');
-    if (colon) *colon = '\0';
-
-    for (const char* const* p = kAllowlistedPackages; *p; ++p) {
-        if (strcmp(cmdline, *p) == 0) return true;
-    }
-    return false;
-}
-
-static bool is_allowlisted_process() {
-    static pid_t cached_pid = -1;
-    static bool cached_value = false;
-    pid_t cur = getpid();
-    if (cur == cached_pid) return cached_value;
-    bool result = compute_allowlisted();
-    cached_value = result;
-    cached_pid = cur;
-    return result;
-}
-
 static bool is_app_process() {
-    if ((getuid() % AID_USER_OFFSET) < AID_APP_START) return false;
-    if (is_allowlisted_process()) return false;
-    return true;
+    return (getuid() % AID_USER_OFFSET) >= AID_APP_START;
 }
 
 static const char* path_basename(const char* path) {
