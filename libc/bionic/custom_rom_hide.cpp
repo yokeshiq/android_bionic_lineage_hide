@@ -19,27 +19,16 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/magic.h>
 #include <linux/memfd.h>
 #include <linux/stat.h>
 #include <stdio.h>
-#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/statfs.h>
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
 #include <private/android_filesystem_config.h>
-
-#define HIDE_MEMFD_TAG "mf"
-#define HIDE_MEMFD_NAME_PREFIX HIDE_MEMFD_TAG ":"
-#define HIDE_MEMFD_LINK_PREFIX "/memfd:" HIDE_MEMFD_TAG ":"
-#define HIDE_MEMFD_LINK_PREFIX_LEN (sizeof(HIDE_MEMFD_LINK_PREFIX) - 1)
-#define HIDE_TRACKED_FD_LIMIT 32768
-#define HIDE_TRACKED_FD_WORD_BITS 64
-#define HIDE_TRACKED_FD_WORD_COUNT (HIDE_TRACKED_FD_LIMIT / HIDE_TRACKED_FD_WORD_BITS)
 
 struct PrefixEntry {
     const char* str;
@@ -70,11 +59,6 @@ static const char* const kMountFilterKeywords[] = {
     "/debug_ramdisk", "overlay", "magisk", "ksu", "KSU", "ksud", "apatch", "/data/adb", nullptr
 };
 
-static const char* const kAllowlistedPackages[] = {
-    "com.infinity.updater",
-    nullptr
-};
-
 #define DM_MAJOR 253u
 
 struct PartitionDevEntry {
@@ -90,41 +74,6 @@ static const PartitionDevEntry kPartitionDmMap[] = {
     { "/odm",        4 },
     { nullptr,       0 },
 };
-
-static _Atomic(uint64_t) g_substituted_fd_bits[HIDE_TRACKED_FD_WORD_COUNT];
-
-static bool is_trackable_fd(int fd) {
-    return fd >= 0 && fd < HIDE_TRACKED_FD_LIMIT;
-}
-
-static bool is_tracked_fd(int fd) {
-    if (!is_trackable_fd(fd)) return false;
-    uint64_t bit = 1ULL << (fd % HIDE_TRACKED_FD_WORD_BITS);
-    uint64_t word = atomic_load_explicit(&g_substituted_fd_bits[fd / HIDE_TRACKED_FD_WORD_BITS],
-                                         memory_order_acquire);
-    return (word & bit) != 0;
-}
-
-static void register_fd(int fd) {
-    if (!is_trackable_fd(fd)) return;
-    uint64_t bit = 1ULL << (fd % HIDE_TRACKED_FD_WORD_BITS);
-    atomic_fetch_or_explicit(&g_substituted_fd_bits[fd / HIDE_TRACKED_FD_WORD_BITS], bit,
-                             memory_order_release);
-}
-
-void custom_rom_hide_unregister_fd(int fd) {
-    if (!is_trackable_fd(fd)) return;
-    uint64_t bit = 1ULL << (fd % HIDE_TRACKED_FD_WORD_BITS);
-    _Atomic(uint64_t)* word = &g_substituted_fd_bits[fd / HIDE_TRACKED_FD_WORD_BITS];
-    if ((atomic_load_explicit(word, memory_order_acquire) & bit) == 0) return;
-    atomic_fetch_and_explicit(word, ~bit, memory_order_release);
-}
-
-void custom_rom_hide_transfer_fd(int old_fd, int new_fd) {
-    if (new_fd < 0 || old_fd == new_fd) return;
-    if (is_tracked_fd(old_fd)) register_fd(new_fd);
-    else custom_rom_hide_unregister_fd(new_fd);
-}
 
 static inline int raw_openat(const char* path, int flags) {
     return static_cast<int>(syscall(__NR_openat, AT_FDCWD, path, flags, 0));
@@ -154,25 +103,35 @@ static inline ssize_t raw_readlinkat(const char* path, char* buf, size_t size) {
     return syscall(__NR_readlinkat, AT_FDCWD, path, buf, size);
 }
 
-static inline int raw_fstatat(int dirfd, const char* path, struct stat* sb, int flags) {
-#if defined(__LP64__)
-    return static_cast<int>(syscall(__NR_newfstatat, dirfd, path, sb, flags));
-#else
-    return static_cast<int>(syscall(__NR_fstatat64, dirfd, path, sb, flags));
-#endif
-}
-
-static inline int raw_statx(int dirfd, const char* path, int flags, unsigned mask, struct statx* sx) {
-    return static_cast<int>(syscall(__NR_statx, dirfd, path, flags, mask, sx));
-}
-
-static inline int raw_statfs(const char* path, struct statfs* sf) {
-#if defined(__LP64__)
-    return static_cast<int>(syscall(__NR_statfs, path, sf));
-#else
-    return static_cast<int>(syscall(__NR_statfs64, path, sizeof(*sf), sf));
-#endif
-}
+static const char* const kAllowlistedPackages[] = {
+    "com.infinity.updater",
+    "com.tencent.tmgp.sgame",
+    "com.tencent.tmgp.sgamece",
+    "com.tencent.tmgp.pubgmhd",
+    "com.tencent.ig",
+    "com.pubg.krmobile",
+    "com.vng.pubgmobile",
+    "com.rekoo.pubgm",
+    "com.dts.freefireth",
+    "com.dts.freefiremax",
+    "com.tencent.tmgp.cf",
+    "com.tencent.tmgp.speedmobile",
+    "com.tencent.KiHan",
+    "com.tencent.jkchess",
+    "com.tencent.lolm",
+    "com.riotgames.league.wildrift",
+    "com.tencent.mf.uam",
+    "com.proximabeta.mf.uamo",
+    "com.tencent.tmgp.dnf",
+    "com.garena.game.codm",
+    "com.activision.callofduty.shooter",
+    "com.tencent.tmgp.wuxia",
+    "com.tencent.tmgp.djsy",
+    "com.tencent.lzhx",
+    "com.tencent.gate",
+    "com.tencent.tmgp.codd",
+    nullptr
+};
 
 static bool compute_allowlisted() {
     int fd = raw_openat("/proc/self/cmdline", O_RDONLY);
@@ -182,9 +141,10 @@ static bool compute_allowlisted() {
     ssize_t n = raw_read(fd, cmdline, sizeof(cmdline) - 1);
     raw_close(fd);
     if (n <= 0) return false;
-
     cmdline[n] = '\0';
-    if (char* colon = strchr(cmdline, ':')) *colon = '\0';
+
+    char* colon = strchr(cmdline, ':');
+    if (colon) *colon = '\0';
 
     for (const char* const* p = kAllowlistedPackages; *p; ++p) {
         if (strcmp(cmdline, *p) == 0) return true;
@@ -193,17 +153,13 @@ static bool compute_allowlisted() {
 }
 
 static bool is_allowlisted_process() {
-    static _Atomic(pid_t) cached_pid = -1;
-    static _Atomic(bool) cached_value = false;
-
+    static pid_t cached_pid = -1;
+    static bool cached_value = false;
     pid_t cur = getpid();
-    if (atomic_load_explicit(&cached_pid, memory_order_acquire) == cur) {
-        return atomic_load_explicit(&cached_value, memory_order_acquire);
-    }
-
+    if (cur == cached_pid) return cached_value;
     bool result = compute_allowlisted();
-    atomic_store_explicit(&cached_value, result, memory_order_release);
-    atomic_store_explicit(&cached_pid, cur, memory_order_release);
+    cached_value = result;
+    cached_pid = cur;
     return result;
 }
 
@@ -323,49 +279,26 @@ bool custom_rom_hide_should_filter_dirent(int dirfd, const char* name) {
 
 static int create_encoded_memfd(const char* path) {
     char memfd_name[250];
-    snprintf(memfd_name, sizeof(memfd_name), HIDE_MEMFD_NAME_PREFIX "%s", path);
-    int fd = raw_memfd_create(memfd_name, 0);
-    if (fd >= 0) register_fd(fd);
-    return fd;
-}
-
-static bool decode_encoded_memfd_link(const char* link, char* out, size_t out_size) {
-    if (!link || !out || out_size == 0) return false;
-    if (strncmp(link, HIDE_MEMFD_LINK_PREFIX, HIDE_MEMFD_LINK_PREFIX_LEN) != 0) return false;
-
-    const char* real_path = link + HIDE_MEMFD_LINK_PREFIX_LEN;
-    size_t real_len = strlen(real_path);
-    const char* deleted_suffix = strstr(real_path, " (deleted)");
-    if (deleted_suffix) real_len = static_cast<size_t>(deleted_suffix - real_path);
-    if (real_len == 0 || real_len >= out_size) return false;
-
-    memcpy(out, real_path, real_len);
-    out[real_len] = '\0';
-    return true;
-}
-
-static bool resolve_encoded_memfd_path(int fd, char* out, size_t out_size) {
-    if (!is_tracked_fd(fd)) return false;
-
-    char fd_path[512];
-    if (!resolve_fd_path(fd, fd_path, sizeof(fd_path))) return false;
-    bool decoded = decode_encoded_memfd_link(fd_path, out, out_size);
-    if (!decoded) custom_rom_hide_unregister_fd(fd);
-    return decoded;
+    snprintf(memfd_name, sizeof(memfd_name), "axion:%s", path);
+    return raw_memfd_create(memfd_name, 0);
 }
 
 ssize_t custom_rom_hide_readlink_post(char* buf, size_t size, ssize_t ret) {
     if (ret <= 0 || !is_app_process()) return ret;
 
-    if (ret > static_cast<ssize_t>(HIDE_MEMFD_LINK_PREFIX_LEN) &&
-        strncmp(buf, HIDE_MEMFD_LINK_PREFIX, HIDE_MEMFD_LINK_PREFIX_LEN) == 0) {
-        char temp[512];
+    const char* prefix = "/memfd:axion:";
+    size_t prefix_len = 13;
+
+    if (ret > static_cast<ssize_t>(prefix_len) && strncmp(buf, prefix, prefix_len) == 0) {
+        char temp[256];
         size_t copy_len = static_cast<size_t>(ret) < sizeof(temp) - 1 ? static_cast<size_t>(ret) : sizeof(temp) - 1;
         memcpy(temp, buf, copy_len);
         temp[copy_len] = '\0';
 
-        char real_path[512];
-        if (!decode_encoded_memfd_link(temp, real_path, sizeof(real_path))) return ret;
+        char* deleted_suffix = strstr(temp, " (deleted)");
+        if (deleted_suffix) *deleted_suffix = '\0';
+
+        const char* real_path = temp + prefix_len;
         size_t real_len = strlen(real_path);
 
         if (real_len > 0 && real_len <= size) {
@@ -405,22 +338,6 @@ static ProcFilterType get_proc_filter_type(const char* path) {
     return PROC_FILTER_NONE;
 }
 
-static bool line_has_keyword_segment(const char* line, const char* kw) {
-    size_t klen = strlen(kw);
-    if (klen == 0) return false;
-
-    const char* p = line;
-    while ((p = strstr(p, kw)) != nullptr) {
-        char before = (p == line) ? '/' : p[-1];
-        char after = p[klen];
-        bool lb = before == '/' || before == ' ' || before == '\0';
-        bool rb = after == '/' || after == ' ' || after == '.' || after == '\0' || after == '\n';
-        if (lb && rb) return true;
-        p += klen;
-    }
-    return false;
-}
-
 static bool line_contains_any(const char* line, const char* const* keywords) {
     for (const char* const* kw = keywords; *kw; ++kw) {
         if (strstr(line, *kw) != nullptr) return true;
@@ -428,16 +345,9 @@ static bool line_contains_any(const char* line, const char* const* keywords) {
     return false;
 }
 
-static bool line_contains_any_segment(const char* line, const char* const* keywords) {
-    for (const char* const* kw = keywords; *kw; ++kw) {
-        if (line_has_keyword_segment(line, *kw)) return true;
-    }
-    return false;
-}
-
 static bool should_filter_line(ProcFilterType type, const char* line) {
     switch (type) {
-        case PROC_FILTER_MAPS: return line_contains_any_segment(line, kProcFilterKeywords);
+        case PROC_FILTER_MAPS: return line_contains_any(line, kProcFilterKeywords);
         case PROC_FILTER_MOUNTS:
         case PROC_FILTER_MOUNTINFO: return line_contains_any(line, kMountFilterKeywords);
         case PROC_FILTER_FILESYSTEMS: return strstr(line, "overlay") != nullptr;
@@ -470,72 +380,16 @@ static char* read_file_raw(const char* path, size_t* out_size) {
     return buf;
 }
 
-typedef bool (*LinePredicate)(const char* line, void* ctx);
-typedef void (*LineWriter)(int mem_fd, char* line, size_t line_len, void* ctx);
-
-static void write_line_raw(int mem_fd, char* line, size_t line_len, void*) {
-    raw_write(mem_fd, line, line_len);
-}
-
-static int filter_file_with(const char* path, LinePredicate drop, LineWriter writer, void* ctx) {
-    size_t file_size = 0;
-    char* content = read_file_raw(path, &file_size);
-    if (!content) return -1;
-
-    int mem_fd = create_encoded_memfd(path);
-    if (mem_fd < 0) {
-        free(content);
-        return -1;
-    }
-
-    char* pos = content;
-    while (*pos) {
-        char* eol = strchr(pos, '\n');
-        size_t line_len = eol ? static_cast<size_t>(eol - pos + 1) : strlen(pos);
-        char saved = pos[line_len];
-        pos[line_len] = '\0';
-        if (!drop || !drop(pos, ctx)) {
-            (writer ? writer : write_line_raw)(mem_fd, pos, line_len, ctx);
-        }
-        pos[line_len] = saved;
-        pos += line_len;
-    }
-
-    free(content);
-    raw_lseek(mem_fd, 0, SEEK_SET);
-    return mem_fd;
-}
-
-static void replace_all_cmdline(char* content, size_t len, const char* needle, size_t needle_len,
-                                const char* replacement, size_t replacement_len) {
-    if (needle_len == 0 || needle_len != replacement_len) return;
-
-    char* end = content + strnlen(content, len);
-    for (char* p = content; p < end;) {
-        char* hit = strstr(p, needle);
-        if (!hit || hit >= end) break;
-        memcpy(hit, replacement, needle_len);
-        p = hit + needle_len;
-    }
-}
-
-#define REPLACE_CMDLINE_LITERAL(content, len, needle, replacement) \
-    do { \
-        static_assert(sizeof(needle) == sizeof(replacement), \
-                      "cmdline replacement must preserve byte length"); \
-        replace_all_cmdline(content, len, needle, sizeof(needle) - 1, replacement, \
-                            sizeof(replacement) - 1); \
-    } while (false)
-
 static void filter_cmdline(int mem_fd, char* content, size_t len) {
-    REPLACE_CMDLINE_LITERAL(content, len, "androidboot.verifiedbootstate=orange", "androidboot.verifiedbootstate=green ");
-    REPLACE_CMDLINE_LITERAL(content, len, "androidboot.verifiedbootstate=yellow", "androidboot.verifiedbootstate=green ");
-    REPLACE_CMDLINE_LITERAL(content, len, "androidboot.flash.locked=0", "androidboot.flash.locked=1");
-    REPLACE_CMDLINE_LITERAL(content, len, "androidboot.vbmeta.device_state=unlocked", "androidboot.vbmeta.device_state=locked  ");
+    char* p;
+    if ((p = strstr(content, "androidboot.verifiedbootstate=orange")) != nullptr) memcpy(p, "androidboot.verifiedbootstate=green ", 36);
+    if ((p = strstr(content, "androidboot.verifiedbootstate=yellow")) != nullptr) memcpy(p, "androidboot.verifiedbootstate=green ", 36);
+    if ((p = strstr(content, "androidboot.flash.locked=0")) != nullptr) memcpy(p, "androidboot.flash.locked=1", 26);
+    if ((p = strstr(content, "androidboot.vbmeta.device_state=unlocked")) != nullptr) memcpy(p, "androidboot.vbmeta.device_state=locked  ", 40);
     raw_write(mem_fd, content, strnlen(content, len));
 }
 
-static void write_spoofed_mount_line(int mem_fd, char* line, size_t line_len, void*) {
+static void write_spoofed_mount_line(int mem_fd, char* line, size_t line_len) {
     char* rw_delim = strstr(line, ",rw,");
     if (rw_delim) { rw_delim[1] = 'r'; rw_delim[2] = 'o'; }
     rw_delim = strstr(line, " rw,");
@@ -574,10 +428,6 @@ static void write_spoofed_mount_line(int mem_fd, char* line, size_t line_len, vo
     raw_write(mem_fd, line, line_len);
 }
 
-static bool drop_proc_line(const char* line, void* ctx) {
-    return should_filter_line(*static_cast<ProcFilterType*>(ctx), line);
-}
-
 int custom_rom_hide_filter_proc(const char* path) {
     if (!is_app_process()) return -1;
     if (!path || reinterpret_cast<uintptr_t>(path) < 0x1000000) return -1;
@@ -586,14 +436,6 @@ int custom_rom_hide_filter_proc(const char* path) {
     ProcFilterType type = get_proc_filter_type(path);
     if (type == PROC_FILTER_NONE) { errno = saved_errno; return -1; }
 
-    if (type != PROC_FILTER_CMDLINE) {
-        LineWriter writer = (type == PROC_FILTER_MOUNTS || type == PROC_FILTER_MOUNTINFO)
-                ? write_spoofed_mount_line : write_line_raw;
-        int mem_fd = filter_file_with(path, drop_proc_line, writer, &type);
-        errno = saved_errno;
-        return mem_fd;
-    }
-
     size_t file_size = 0;
     char* content = read_file_raw(path, &file_size);
     if (!content) { errno = saved_errno; return -1; }
@@ -601,7 +443,23 @@ int custom_rom_hide_filter_proc(const char* path) {
     int mem_fd = create_encoded_memfd(path);
     if (mem_fd < 0) { free(content); errno = saved_errno; return -1; }
 
-    filter_cmdline(mem_fd, content, file_size);
+    if (type == PROC_FILTER_CMDLINE) {
+        filter_cmdline(mem_fd, content, file_size);
+    } else {
+        char* pos = content;
+        while (*pos) {
+            char* eol = strchr(pos, '\n');
+            size_t line_len = eol ? (eol - pos + 1) : strlen(pos);
+            char saved = pos[line_len];
+            pos[line_len] = '\0';
+            if (!should_filter_line(type, pos)) {
+                if (type == PROC_FILTER_MOUNTS || type == PROC_FILTER_MOUNTINFO) write_spoofed_mount_line(mem_fd, pos, line_len);
+                else raw_write(mem_fd, pos, line_len);
+            }
+            pos[line_len] = saved;
+            pos += line_len;
+        }
+    }
 
     free(content);
     raw_lseek(mem_fd, 0, SEEK_SET);
@@ -633,18 +491,30 @@ int custom_rom_hide_filter_sepolicy(const char* path) {
     }
     if (!match) { errno = saved_errno; return -1; }
 
-    int mem_fd = filter_file_with(path, [](const char* line, void*) {
-        return strstr(line, "lineage") != nullptr;
-    }, write_line_raw, nullptr);
+    size_t file_size = 0;
+    char* content = read_file_raw(path, &file_size);
+    if (!content) { errno = saved_errno; return -1; }
+
+    int mem_fd = create_encoded_memfd(path);
+    if (mem_fd < 0) { free(content); errno = saved_errno; return -1; }
+
+    char* pos = content;
+    while (*pos) {
+        char* eol = strchr(pos, '\n');
+        size_t line_len = eol ? (eol - pos + 1) : strlen(pos);
+        char saved = pos[line_len];
+        pos[line_len] = '\0';
+        if (!strstr(pos, "lineage")) raw_write(mem_fd, pos, line_len);
+        pos[line_len] = saved;
+        pos += line_len;
+    }
+
+    free(content);
+    raw_lseek(mem_fd, 0, SEEK_SET);
     errno = saved_errno;
     return mem_fd;
 }
 
-#ifndef CUSTOM_ROM_HIDE_FILTER_VINTF
-#define CUSTOM_ROM_HIDE_FILTER_VINTF 1
-#endif
-
-#if CUSTOM_ROM_HIDE_FILTER_VINTF
 static const char* const kVintfFilterPaths[] = {
     "/system/etc/vintf/compatibility_matrix.xml", "/system/etc/vintf/compatibility_matrix.device.xml",
     "/vendor/etc/vintf/compatibility_matrix.xml", "/vendor/etc/vintf/compatibility_matrix.device.xml",
@@ -658,13 +528,8 @@ static const char* const kVintfFilterPaths[] = {
 static const char* const kVintfFilterKeywords[] = {
     "lineage", "Lineage", "infinity", "Infinity-X", "ProjectInfinityX", nullptr
 };
-#endif
 
 int custom_rom_hide_filter_vintf(const char* path) {
-#if !CUSTOM_ROM_HIDE_FILTER_VINTF
-    (void) path;
-    return -1;
-#else
     if (!is_app_process()) return -1;
     if (!path || reinterpret_cast<uintptr_t>(path) < 0x1000000) return -1;
 
@@ -675,35 +540,42 @@ int custom_rom_hide_filter_vintf(const char* path) {
     }
     if (!match) { errno = saved_errno; return -1; }
 
-    struct VintfCtx {
-        int skip_depth;
-    } ctx = {};
-    int mem_fd = filter_file_with(path, [](const char* line, void* raw_ctx) {
-        VintfCtx* ctx = static_cast<VintfCtx*>(raw_ctx);
-        bool keyword_hit = line_contains_any(line, kVintfFilterKeywords);
-        bool opens_block = strstr(line, "<hal") != nullptr || strstr(line, "<interface") != nullptr;
-        bool closes_block = strstr(line, "</hal>") != nullptr || strstr(line, "</interface>") != nullptr;
+    size_t file_size = 0;
+    char* content = read_file_raw(path, &file_size);
+    if (!content) { errno = saved_errno; return -1; }
 
-        if (ctx->skip_depth > 0) {
-            if (opens_block) ctx->skip_depth++;
-            if (closes_block) ctx->skip_depth--;
-            return true;
+    int mem_fd = create_encoded_memfd(path);
+    if (mem_fd < 0) { free(content); errno = saved_errno; return -1; }
+
+    int skip_depth = 0;
+    char* pos = content;
+    while (*pos) {
+        char* eol = strchr(pos, '\n');
+        size_t line_len = eol ? static_cast<size_t>(eol - pos + 1) : strlen(pos);
+        char saved = pos[line_len];
+        pos[line_len] = '\0';
+
+        bool keyword_hit = line_contains_any(pos, kVintfFilterKeywords);
+        bool opens_block  = strstr(pos, "<hal") != nullptr || strstr(pos, "<interface") != nullptr;
+        bool closes_block = strstr(pos, "</hal>") != nullptr || strstr(pos, "</interface>") != nullptr;
+
+        if (skip_depth > 0) {
+            if (opens_block) skip_depth++;
+            if (closes_block) skip_depth--;
+        } else if (keyword_hit) {
+            if (opens_block && !closes_block) skip_depth = 1;
+        } else {
+            raw_write(mem_fd, pos, line_len);
         }
-        if (keyword_hit) {
-            if (opens_block && !closes_block) ctx->skip_depth = 1;
-            return true;
-        }
-        return false;
-    }, write_line_raw, &ctx);
-    if (mem_fd >= 0 && ctx.skip_depth != 0) {
-        custom_rom_hide_unregister_fd(mem_fd);
-        raw_close(mem_fd);
-        errno = saved_errno;
-        return -1;
+
+        pos[line_len] = saved;
+        pos += line_len;
     }
+
+    free(content);
+    raw_lseek(mem_fd, 0, SEEK_SET);
     errno = saved_errno;
     return mem_fd;
-#endif
 }
 
 static const char* const kSpoofedEmptyProps[] = {
@@ -777,61 +649,4 @@ void custom_rom_hide_spoof_statx(const char* path, struct statx* sx) {
         sx->stx_dev_major = DM_MAJOR;
         sx->stx_dev_minor = e->dm_minor;
     }
-}
-
-void custom_rom_hide_spoof_fd_stat(int fd, struct stat* sb) {
-    if (fd < 0 || !sb) return;
-    if (!is_tracked_fd(fd)) return;
-    if (!is_app_process()) return;
-
-    int saved_errno = errno;
-    char real_path[512];
-    if (resolve_encoded_memfd_path(fd, real_path, sizeof(real_path))) {
-        struct stat real_sb;
-        if (raw_fstatat(AT_FDCWD, real_path, &real_sb, 0) == 0) {
-            *sb = real_sb;
-        } else {
-            sb->st_dev = makedev(0, 0);
-            sb->st_ino = 0;
-        }
-    }
-    errno = saved_errno;
-}
-
-void custom_rom_hide_spoof_fd_statx(int fd, unsigned mask, struct statx* sx) {
-    if (fd < 0 || !sx) return;
-    if (!is_tracked_fd(fd)) return;
-    if (!is_app_process()) return;
-
-    int saved_errno = errno;
-    char real_path[512];
-    if (resolve_encoded_memfd_path(fd, real_path, sizeof(real_path))) {
-        struct statx real_sx;
-        if (raw_statx(AT_FDCWD, real_path, 0, mask, &real_sx) == 0) {
-            *sx = real_sx;
-        } else {
-            sx->stx_dev_major = 0;
-            sx->stx_dev_minor = 0;
-            sx->stx_ino = 0;
-        }
-    }
-    errno = saved_errno;
-}
-
-void custom_rom_hide_spoof_fd_statfs(int fd, struct statfs* sf) {
-    if (fd < 0 || !sf) return;
-    if (!is_tracked_fd(fd)) return;
-    if (!is_app_process()) return;
-
-    int saved_errno = errno;
-    char real_path[512];
-    if (resolve_encoded_memfd_path(fd, real_path, sizeof(real_path))) {
-        struct statfs real_sf;
-        if (raw_statfs(real_path, &real_sf) == 0) {
-            *sf = real_sf;
-        } else {
-            sf->f_type = PROC_SUPER_MAGIC;
-        }
-    }
-    errno = saved_errno;
 }

@@ -29,16 +29,13 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "custom_rom_hide.h"
 #include "private/bionic_fdtrack.h"
 
 extern "C" int __dup(int old_fd);
 extern "C" int __dup3(int old_fd, int new_fd, int flags);
 
 int dup(int old_fd) {
-  int new_fd = __dup(old_fd);
-  custom_rom_hide_transfer_fd(old_fd, new_fd);
-  return FDTRACK_CREATE(new_fd);
+  return FDTRACK_CREATE(__dup(old_fd));
 }
 
 int dup2(int old_fd, int new_fd) {
@@ -52,13 +49,9 @@ int dup2(int old_fd, int new_fd) {
     return old_fd;
   }
 
-  int rc = __dup3(old_fd, new_fd, 0);
-  custom_rom_hide_transfer_fd(old_fd, rc);
-  return FDTRACK_CREATE(rc);
+  return FDTRACK_CREATE(__dup3(old_fd, new_fd, 0));
 }
 
 int dup3(int old_fd, int new_fd, int flags) {
-  int rc = __dup3(old_fd, new_fd, flags);
-  custom_rom_hide_transfer_fd(old_fd, rc);
-  return FDTRACK_CREATE(rc);
+  return FDTRACK_CREATE(__dup3(old_fd, new_fd, flags));
 }

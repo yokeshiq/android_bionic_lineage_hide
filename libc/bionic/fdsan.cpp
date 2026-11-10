@@ -44,7 +44,6 @@
 #include <platform/bionic/reserved_signals.h>
 #include <sys/system_properties.h>
 
-#include "custom_rom_hide.h"
 #include "private/bionic_fdtrack.h"
 #include "private/bionic_globals.h"
 #include "private/bionic_inline_raise.h"
@@ -248,7 +247,6 @@ int android_fdsan_close_with_tag(int fd, uint64_t expected_tag) {
   }
 
   FDTRACK_CLOSE(fd);
-  custom_rom_hide_unregister_fd(fd);
   FdEntry* fde = GetFdEntry(fd);
   if (!fde) {
     return __close(fd);
