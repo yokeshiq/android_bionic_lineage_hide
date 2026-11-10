@@ -29,7 +29,6 @@
 #include <stdarg.h>
 #include <fcntl.h>
 
-#include "custom_rom_hide.h"
 #include "private/bionic_fdtrack.h"
 #include "private/bionic_fortify.h"
 
@@ -55,10 +54,8 @@ int fcntl(int fd, int cmd, ...) {
   int rc = __fcntl64(fd, cmd, arg);
 #endif
   if (cmd == F_DUPFD) {
-    custom_rom_hide_transfer_fd(fd, rc);
     return FDTRACK_CREATE_NAME("F_DUPFD", rc);
   } else if (cmd == F_DUPFD_CLOEXEC) {
-    custom_rom_hide_transfer_fd(fd, rc);
     return FDTRACK_CREATE_NAME("F_DUPFD_CLOEXEC", rc);
   }
   return rc;

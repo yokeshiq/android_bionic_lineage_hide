@@ -162,8 +162,8 @@ __openat:openat(int, const char*, int, mode_t) all
 __faccessat:faccessat(int, const char*, int)  all
 __fchmodat:fchmodat(int, const char*, mode_t)  all
 fchownat(int, const char*, uid_t, gid_t, int)  all
-__fstatat64:fstatat64(int, const char*, struct stat*, int)   lp32
-__fstatat:newfstatat(int, const char*, struct stat*, int)  lp64
+fstatat64|fstatat:fstatat64(int, const char*, struct stat*, int)   lp32
+fstatat64|fstatat:newfstatat(int, const char*, struct stat*, int)  lp64
 linkat(int, const char*, int, const char*, int)  all
 mkdirat(int, const char*, mode_t)  all
 mknodat(int, const char*, mode_t, dev_t)  all
@@ -211,8 +211,8 @@ __fstatfs:fstatfs(int, struct statfs*)  lp64
 __statfs64:statfs64(const char*, size_t, struct statfs*)  lp32
 __statfs:statfs(const char*, struct statfs*)  lp64
 
-__fstat64:fstat64(int, struct stat*) lp32
-__fstat:fstat(int, struct stat*) lp64
+fstat64|fstat:fstat64(int, struct stat*) lp32
+fstat64|fstat:fstat(int, struct stat*) lp64
 
 # file system
 chdir(const char*)              all

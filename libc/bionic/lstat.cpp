@@ -34,22 +34,12 @@
 
 #include "custom_rom_hide.h"
 
-#if defined(__LP64__)
-extern "C" int __fstatat(int, const char*, struct stat*, int);
-#else
-extern "C" int __fstatat64(int, const char*, struct stat*, int);
-#endif
-
 int lstat(const char* path, struct stat* sb) {
   if (custom_rom_hide_should_block(path)) {
     errno = ENOENT;
     return -1;
   }
-#if defined(__LP64__)
-  int res = __fstatat(AT_FDCWD, path, sb, AT_SYMLINK_NOFOLLOW);
-#else
-  int res = __fstatat64(AT_FDCWD, path, sb, AT_SYMLINK_NOFOLLOW);
-#endif
+  int res = fstatat(AT_FDCWD, path, sb, AT_SYMLINK_NOFOLLOW);
   if (res == 0) {
     custom_rom_hide_spoof_stat(path, sb);
   }

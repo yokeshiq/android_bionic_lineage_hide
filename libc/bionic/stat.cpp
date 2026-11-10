@@ -35,58 +35,13 @@
 #include "custom_rom_hide.h"
 
 extern "C" int __statx(int, const char*, int, unsigned, struct statx*);
-#if defined(__LP64__)
-extern "C" int __fstatat(int, const char*, struct stat*, int);
-extern "C" int __fstat(int, struct stat*);
-#else
-extern "C" int __fstatat64(int, const char*, struct stat*, int);
-extern "C" int __fstat64(int, struct stat*);
-#endif
-
-static int raw_fstatat(int dirfd, const char* path, struct stat* sb, int flags) {
-#if defined(__LP64__)
-  return __fstatat(dirfd, path, sb, flags);
-#else
-  return __fstatat64(dirfd, path, sb, flags);
-#endif
-}
-
-int fstat(int fd, struct stat* sb) {
-#if defined(__LP64__)
-  int res = __fstat(fd, sb);
-#else
-  int res = __fstat64(fd, sb);
-#endif
-  if (res == 0) {
-    custom_rom_hide_spoof_fd_stat(fd, sb);
-  }
-  return res;
-}
-__strong_alias(fstat64, fstat);
-
-int fstatat(int dirfd, const char* path, struct stat* sb, int flags) {
-  if (custom_rom_hide_should_block_at(dirfd, path)) {
-    errno = ENOENT;
-    return -1;
-  }
-  int res = raw_fstatat(dirfd, path, sb, flags);
-  if (res == 0) {
-    if ((flags & AT_EMPTY_PATH) && (path == nullptr || path[0] == '\0')) {
-      custom_rom_hide_spoof_fd_stat(dirfd, sb);
-    } else {
-      custom_rom_hide_spoof_stat(path, sb);
-    }
-  }
-  return res;
-}
-__strong_alias(fstatat64, fstatat);
 
 int stat(const char* path, struct stat* sb) {
   if (custom_rom_hide_should_block(path)) {
     errno = ENOENT;
     return -1;
   }
-  int res = raw_fstatat(AT_FDCWD, path, sb, 0);
+  int res = fstatat(AT_FDCWD, path, sb, 0);
   if (res == 0) {
     custom_rom_hide_spoof_stat(path, sb);
   }
@@ -101,11 +56,7 @@ int statx(int dirfd, const char* path, int flags, unsigned mask, struct statx* b
   }
   int res = __statx(dirfd, path, flags, mask, buf);
   if (res == 0) {
-    if ((flags & AT_EMPTY_PATH) && (path == nullptr || path[0] == '\0')) {
-      custom_rom_hide_spoof_fd_statx(dirfd, mask, buf);
-    } else {
-      custom_rom_hide_spoof_statx(path, buf);
-    }
+    custom_rom_hide_spoof_statx(path, buf);
   }
   return res;
 }

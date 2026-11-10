@@ -16,8 +16,6 @@
 
 #include <sys/statfs.h>
 
-#include "custom_rom_hide.h"
-
 // Paper over the fact that 32-bit kernels use fstatfs64/statfs64 with
 // an extra argument, but 64-bit kernels don't have the "64" bit suffix or
 // the extra size_t argument.
@@ -41,7 +39,6 @@ int fstatfs(int fd, struct statfs* result) {
   if (rc != 0) {
     return rc;
   }
-  custom_rom_hide_spoof_fd_statfs(fd, result);
   result->f_flags &= ~ST_VALID;
   return 0;
 }
