@@ -181,15 +181,15 @@ static bool resolve_fd_path(int fd, char* buf, size_t size) {
 }
 
 bool custom_rom_hide_should_block(const char* path) {
-    if (!path || reinterpret_cast<uintptr_t>(path) < 0x1000000) return false;
-    if (path[0] != '/') return false;
     if (!is_app_process()) return false;
+    if (!path || reinterpret_cast<uintptr_t>(path) < 0x10000) return false;
+    if (path[0] != '/') return false;
     return is_rom_path(path);
 }
 
 bool custom_rom_hide_should_block_at(int dirfd, const char* path) {
-    if (!path || reinterpret_cast<uintptr_t>(path) < 0x1000000) return false;
     if (!is_app_process()) return false;
+    if (!path || reinterpret_cast<uintptr_t>(path) < 0x10000) return false;
 
     int saved_errno = errno;
     bool result = false;
@@ -210,8 +210,8 @@ bool custom_rom_hide_should_block_at(int dirfd, const char* path) {
 }
 
 bool custom_rom_hide_should_filter_dirent(int dirfd, const char* name) {
-    if (!name || reinterpret_cast<uintptr_t>(name) < 0x1000000) return false;
     if (!is_app_process()) return false;
+    if (!name || reinterpret_cast<uintptr_t>(name) < 0x10000) return false;
 
     int saved_errno = errno;
     bool result = false;
@@ -273,7 +273,7 @@ enum ProcFilterType {
 };
 
 static ProcFilterType get_proc_filter_type(const char* path) {
-    if (!path || reinterpret_cast<uintptr_t>(path) < 0x1000000) return PROC_FILTER_NONE;
+    if (!path || reinterpret_cast<uintptr_t>(path) < 0x10000) return PROC_FILTER_NONE;
     if (strcmp(path, "/proc/cmdline") == 0) return PROC_FILTER_CMDLINE;
     if (strcmp(path, "/proc/filesystems") == 0) return PROC_FILTER_FILESYSTEMS;
     if (strncmp(path, "/proc/", 6) != 0) return PROC_FILTER_NONE;
@@ -388,7 +388,7 @@ static void write_spoofed_mount_line(int mem_fd, char* line, size_t line_len) {
 
 int custom_rom_hide_filter_proc(const char* path) {
     if (!is_app_process()) return -1;
-    if (!path || reinterpret_cast<uintptr_t>(path) < 0x1000000) return -1;
+    if (!path || reinterpret_cast<uintptr_t>(path) < 0x10000) return -1;
 
     int saved_errno = errno;
     ProcFilterType type = get_proc_filter_type(path);
@@ -440,7 +440,7 @@ static const char* const kSepolicyFilterPaths[] = {
 
 int custom_rom_hide_filter_sepolicy(const char* path) {
     if (!is_app_process()) return -1;
-    if (!path || reinterpret_cast<uintptr_t>(path) < 0x1000000) return -1;
+    if (!path || reinterpret_cast<uintptr_t>(path) < 0x10000) return -1;
 
     int saved_errno = errno;
     bool match = false;
@@ -489,7 +489,7 @@ static const char* const kVintfFilterKeywords[] = {
 
 int custom_rom_hide_filter_vintf(const char* path) {
     if (!is_app_process()) return -1;
-    if (!path || reinterpret_cast<uintptr_t>(path) < 0x1000000) return -1;
+    if (!path || reinterpret_cast<uintptr_t>(path) < 0x10000) return -1;
 
     int saved_errno = errno;
     bool match = false;
@@ -550,10 +550,7 @@ static const PropOverride kSpoofedValueProps[] = {
 };
 
 bool custom_rom_hide_should_spoof_prop(const char* name, char* value) {
-    if (!name || !value) return false;
-    if (reinterpret_cast<uintptr_t>(name) < 0x1000000) return false;
-    if (reinterpret_cast<uintptr_t>(value) < 0x1000000) return false;
-    if (!is_app_process()) return false;
+    if (!is_app_process() || !name) return false;
     for (const char* const* p = kSpoofedEmptyProps; *p; ++p) {
         if (strcmp(name, *p) == 0) { value[0] = '\0'; return true; }
     }
@@ -564,8 +561,7 @@ bool custom_rom_hide_should_spoof_prop(const char* name, char* value) {
 }
 
 bool custom_rom_hide_should_hide_prop(const char* name) {
-    if (!name || reinterpret_cast<uintptr_t>(name) < 0x1000000) return false;
-    if (!is_app_process()) return false;
+    if (!is_app_process() || !name) return false;
     for (const char* const* p = kSpoofedEmptyProps; *p; ++p) {
         if (strcmp(name, *p) == 0) return true;
     }
@@ -573,8 +569,7 @@ bool custom_rom_hide_should_hide_prop(const char* name) {
 }
 
 const char* custom_rom_hide_get_prop_override(const char* name) {
-    if (!name || reinterpret_cast<uintptr_t>(name) < 0x1000000) return nullptr;
-    if (!is_app_process()) return nullptr;
+    if (!is_app_process() || !name) return nullptr;
     for (const PropOverride* o = kSpoofedValueProps; o->name; ++o) {
         if (strcmp(name, o->name) == 0) return o->value;
     }
