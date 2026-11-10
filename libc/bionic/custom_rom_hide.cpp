@@ -30,7 +30,6 @@
 #include <sys/statfs.h>
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
-#include <pthread.h>
 #include <unistd.h>
 #include <private/android_filesystem_config.h>
 
@@ -52,19 +51,19 @@ static const char* const kBlockedDirnames[] = {
     "addon.d", "init.d", "TWRP", nullptr
 };
 
-static const PrefixEntry kDirParents[] = {
-    PE("/system"), PE("/system/etc"),
-    PE("/system_ext"), PE("/system_ext/etc"),
-    PE("/product"), PE("/product/etc"),
-    PE("/vendor"), PE("/vendor/etc"),
-    PE("/sdcard"), PE("/data/media/0"),
-    { nullptr, 0 }
+static const char* const kDirParents[] = {
+    "/system", "/system/etc",
+    "/system_ext", "/system_ext/etc",
+    "/product", "/product/etc",
+    "/vendor", "/vendor/etc",
+    "/sdcard", "/data/media/0",
+    nullptr
 };
 
-static const PrefixEntry kProcFilterKeywords[] = {
-    PE("lineage"), PE("Lineage"), PE("infinity"), PE("ProjectInfinityX"), PE("Infinity-X"),
-    PE("omnirom"), PE("aospa"),
-    { nullptr, 0 }
+static const char* const kProcFilterKeywords[] = {
+    "lineage", "Lineage", "infinity", "Infinity-X", "ProjectInfinityX", "omnirom",
+    "aospa",
+    nullptr
 };
 
 static const char* const kMountFilterKeywords[] = {
@@ -193,38 +192,25 @@ static bool compute_allowlisted() {
     return false;
 }
 
-static bool compute_app_process() {
-    if ((getuid() % AID_USER_OFFSET) < AID_APP_START) return false;
-    if (compute_allowlisted()) return false;
-    return true;
-}
-
-static _Atomic(unsigned) g_app_cache_generation = 0;
-
-static void custom_rom_hide_fork_child() {
-    atomic_fetch_add_explicit(&g_app_cache_generation, 1u, memory_order_release);
-}
-
-static void custom_rom_hide_register_atfork() {
-    pthread_atfork(nullptr, nullptr, custom_rom_hide_fork_child);
-}
-
-static bool is_app_process() {
-    static pthread_once_t once = PTHREAD_ONCE_INIT;
-    static _Atomic(unsigned) cached_generation = static_cast<unsigned>(-1);
+static bool is_allowlisted_process() {
+    static _Atomic(pid_t) cached_pid = -1;
     static _Atomic(bool) cached_value = false;
 
-    pthread_once(&once, custom_rom_hide_register_atfork);
-
-    unsigned generation = atomic_load_explicit(&g_app_cache_generation, memory_order_acquire);
-    if (atomic_load_explicit(&cached_generation, memory_order_acquire) == generation) {
+    pid_t cur = getpid();
+    if (atomic_load_explicit(&cached_pid, memory_order_acquire) == cur) {
         return atomic_load_explicit(&cached_value, memory_order_acquire);
     }
 
-    bool result = compute_app_process();
+    bool result = compute_allowlisted();
     atomic_store_explicit(&cached_value, result, memory_order_release);
-    atomic_store_explicit(&cached_generation, generation, memory_order_release);
+    atomic_store_explicit(&cached_pid, cur, memory_order_release);
     return result;
+}
+
+static bool is_app_process() {
+    if ((getuid() % AID_USER_OFFSET) < AID_APP_START) return false;
+    if (is_allowlisted_process()) return false;
+    return true;
 }
 
 static const char* path_basename(const char* path) {
@@ -232,22 +218,19 @@ static const char* path_basename(const char* path) {
     return slash ? slash + 1 : path;
 }
 
-static bool path_parent_equals(const char* path, const char* parent, size_t plen) {
+static bool path_parent_equals(const char* path, const char* parent) {
+    size_t plen = strlen(parent);
     if (strncmp(path, parent, plen) != 0) return false;
     return path[plen] == '/';
 }
 
 static bool is_blocked_dir(const char* path) {
     const char* base = path_basename(path);
-
-    bool name_match = false;
     for (const char* const* dn = kBlockedDirnames; *dn; ++dn) {
-        if (strcmp(base, *dn) == 0) { name_match = true; break; }
-    }
-    if (!name_match) return false;
-
-    for (const PrefixEntry* pp = kDirParents; pp->str; ++pp) {
-        if (path_parent_equals(path, pp->str, pp->len)) return true;
+        if (strcmp(base, *dn) != 0) continue;
+        for (const char* const* pp = kDirParents; *pp; ++pp) {
+            if (path_parent_equals(path, *pp)) return true;
+        }
     }
     return false;
 }
@@ -298,23 +281,13 @@ bool custom_rom_hide_should_block_at(int dirfd, const char* path) {
     bool result = false;
 
     if (path[0] == '/') {
-        result = is_rom_path(path);
+        result = custom_rom_hide_should_block(path);
     } else if (dirfd != AT_FDCWD) {
-        size_t plen = strlen(path);
-        bool candidate = plen > 0 && path[plen - 1] == '/';
-        if (!candidate) {
-            const char* base = path_basename(path);
-            for (const char* const* dn = kBlockedDirnames; *dn; ++dn) {
-                if (strcmp(base, *dn) == 0) { candidate = true; break; }
-            }
-        }
-        if (candidate) {
-            char dir_path[256];
-            if (resolve_fd_path(dirfd, dir_path, sizeof(dir_path))) {
-                char full_path[512];
-                snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, path);
-                result = is_rom_path(full_path);
-            }
+        char dir_path[256];
+        if (resolve_fd_path(dirfd, dir_path, sizeof(dir_path))) {
+            char full_path[512];
+            snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, path);
+            result = custom_rom_hide_should_block(full_path);
         }
     }
 
@@ -326,19 +299,21 @@ bool custom_rom_hide_should_filter_dirent(int dirfd, const char* name) {
     if (!name || reinterpret_cast<uintptr_t>(name) < 0x1000000) return false;
     if (!is_app_process()) return false;
 
-    bool name_match = false;
-    for (const char* const* dn = kBlockedDirnames; *dn; ++dn) {
-        if (strcmp(name, *dn) == 0) { name_match = true; break; }
-    }
-    if (!name_match) return false;
-
     int saved_errno = errno;
     bool result = false;
 
     char dir_path[256];
     if (resolve_fd_path(dirfd, dir_path, sizeof(dir_path))) {
-        for (const PrefixEntry* pp = kDirParents; pp->str; ++pp) {
-            if (strcmp(dir_path, pp->str) == 0) { result = true; break; }
+        for (const char* const* pp = kDirParents; *pp; ++pp) {
+            if (strcmp(dir_path, *pp) == 0) {
+                for (const char* const* dn = kBlockedDirnames; *dn; ++dn) {
+                    if (strcmp(name, *dn) == 0) {
+                        result = true;
+                        break;
+                    }
+                }
+                break;
+            }
         }
     }
 
@@ -430,19 +405,18 @@ static ProcFilterType get_proc_filter_type(const char* path) {
     return PROC_FILTER_NONE;
 }
 
-static bool line_has_blocked_segment(const char* line) {
-    const char* path = strchr(line, '/');
-    if (!path) return false;
-    for (const PrefixEntry* kw = kProcFilterKeywords; kw->str; ++kw) {
-        const char* p = path;
-        while ((p = strstr(p, kw->str)) != nullptr) {
-            char before = (p == line) ? '/' : p[-1];
-            char after = p[kw->len];
-            bool lb = before == '/' || before == ' ' || before == '\0';
-            bool rb = after == '/' || after == ' ' || after == '.' || after == '\0' || after == '\n';
-            if (lb && rb) return true;
-            p += kw->len;
-        }
+static bool line_has_keyword_segment(const char* line, const char* kw) {
+    size_t klen = strlen(kw);
+    if (klen == 0) return false;
+
+    const char* p = line;
+    while ((p = strstr(p, kw)) != nullptr) {
+        char before = (p == line) ? '/' : p[-1];
+        char after = p[klen];
+        bool lb = before == '/' || before == ' ' || before == '\0';
+        bool rb = after == '/' || after == ' ' || after == '.' || after == '\0' || after == '\n';
+        if (lb && rb) return true;
+        p += klen;
     }
     return false;
 }
@@ -454,9 +428,16 @@ static bool line_contains_any(const char* line, const char* const* keywords) {
     return false;
 }
 
+static bool line_contains_any_segment(const char* line, const char* const* keywords) {
+    for (const char* const* kw = keywords; *kw; ++kw) {
+        if (line_has_keyword_segment(line, *kw)) return true;
+    }
+    return false;
+}
+
 static bool should_filter_line(ProcFilterType type, const char* line) {
     switch (type) {
-        case PROC_FILTER_MAPS: return line_has_blocked_segment(line);
+        case PROC_FILTER_MAPS: return line_contains_any_segment(line, kProcFilterKeywords);
         case PROC_FILTER_MOUNTS:
         case PROC_FILTER_MOUNTINFO: return line_contains_any(line, kMountFilterKeywords);
         case PROC_FILTER_FILESYSTEMS: return strstr(line, "overlay") != nullptr;
@@ -554,16 +535,6 @@ static void filter_cmdline(int mem_fd, char* content, size_t len) {
     raw_write(mem_fd, content, strnlen(content, len));
 }
 
-struct MountDm { const char* mnt; const char* dev; };
-static const MountDm kMountDm[] = {
-    { " /system ",     "/dev/block/dm-0" },
-    { " /vendor ",     "/dev/block/dm-1" },
-    { " /product ",    "/dev/block/dm-2" },
-    { " /system_ext ", "/dev/block/dm-3" },
-    { " /odm ",        "/dev/block/dm-4" },
-    { nullptr,         nullptr },
-};
-
 static void write_spoofed_mount_line(int mem_fd, char* line, size_t line_len, void*) {
     char* rw_delim = strstr(line, ",rw,");
     if (rw_delim) { rw_delim[1] = 'r'; rw_delim[2] = 'o'; }
@@ -573,16 +544,20 @@ static void write_spoofed_mount_line(int mem_fd, char* line, size_t line_len, vo
     if (rw_delim) { rw_delim[1] = 'r'; rw_delim[2] = 'o'; }
 
     if (!strstr(line, "/dev/block/loop")) {
-        const char* replacement = nullptr;
-        for (const MountDm* m = kMountDm; m->mnt; ++m) {
-            if (strstr(line, m->mnt)) { replacement = m->dev; break; }
-        }
-        if (!replacement &&
-            (strstr(line, " / / ") || strstr(line, " / ext4") ||
-             strstr(line, " / erofs") || strstr(line, " / f2fs")))
-            replacement = "/dev/block/dm-0";
+        char* target = strstr(line, " /system ");
+        if (!target) target = strstr(line, " /vendor ");
+        if (!target) target = strstr(line, " /product ");
+        if (!target) target = strstr(line, " /system_ext ");
+        if (!target) target = strstr(line, " /odm ");
+        if (!target && (strstr(line, " / / ") || strstr(line, " / ext4") || strstr(line, " / erofs") || strstr(line, " / f2fs"))) target = line;
 
-        if (replacement) {
+        if (target) {
+            const char* replacement = "/dev/block/dm-0";
+            if (strstr(line, " /vendor ")) replacement = "/dev/block/dm-1";
+            else if (strstr(line, " /product ")) replacement = "/dev/block/dm-2";
+            else if (strstr(line, " /system_ext ")) replacement = "/dev/block/dm-3";
+            else if (strstr(line, " /odm ")) replacement = "/dev/block/dm-4";
+
             char* dev_start = strstr(line, "/dev/block/");
             if (!dev_start) dev_start = strstr(line, "/dev/root");
 
