@@ -28,11 +28,66 @@
 
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include <errno.h>
+#include <string.h>
 
 extern "C" int __faccessat(int, const char*, int);
 
+// 判定并拦截三方应用刺探 LineageOS 专有静态节点、sepolicy 策略与 idmap 缓存
+static inline bool is_lineage_static_node(const char* pathname) {
+  if (pathname == nullptr || getuid() < 10000) {
+    return false; // 系统特权进程（UID < 10000）直接放行
+  }
+
+  // 1. 放行应用私有数据目录，但严禁放行 /data/resource-cache/ 下的 Lineage idmap 缓存
+  if (strncmp(pathname, "/data/", 6) == 0) {
+    if (strstr(pathname, "resource-cache") != nullptr &&
+        strcasestr(pathname, "lineage") != nullptr) {
+      return true; // 拦截 /data/resource-cache/*lineage*
+    }
+    return false;
+  }
+
+  // 2. 进程白名单：放行桌面、系统UI、设置以及 Lineage 自带进程
+  const char* prog = getprogname();
+  if (prog != nullptr) {
+    if (strstr(prog, "launcher") != nullptr ||
+        strncmp(prog, "org.lineageos.", 14) == 0 ||
+        strcmp(prog, "com.android.systemui") == 0 ||
+        strcmp(prog, "com.android.settings") == 0) {
+      return false;
+    }
+  }
+
+  // 3. 拦截三方应用刺探 SELinux 策略规则文件（阻断 ROM detected (a)）
+  if (strstr(pathname, "/etc/selinux/") != nullptr) {
+    return true;
+  }
+
+  // 4. 拦截系统分区中的 Lineage 专有特征文件与 Overlay APK
+  if (strcasestr(pathname, "lineage") != nullptr) {
+    return true;
+  }
+  if (strstr(pathname, "addon.d") != nullptr) {
+    return true;
+  }
+  if (strstr(pathname, "hwservice_contexts") != nullptr) {
+    return true;
+  }
+  if (strstr(pathname, "platform-infinity") != nullptr) {
+    return true;
+  }
+
+  return false;
+}
+
 int faccessat(int dirfd, const char* pathname, int mode, int flags) {
+  if (is_lineage_static_node(pathname)) {
+    errno = ENOENT;
+    return -1;
+  }
+
   // "The mode specifies the accessibility check(s) to be performed,
   // and is either the value F_OK, or a mask consisting of the
   // bitwise OR of one or more of R_OK, W_OK, and X_OK."
@@ -43,15 +98,6 @@ int faccessat(int dirfd, const char* pathname, int mode, int flags) {
   }
 
   if (flags != 0) {
-    // We deliberately don't support AT_SYMLINK_NOFOLLOW, a glibc
-    // only feature which is error prone and dangerous.
-    // More details at http://permalink.gmane.org/gmane.linux.lib.musl.general/6952
-    //
-    // AT_EACCESS isn't supported either. Android doesn't have setuid
-    // programs, and never runs code with euid!=uid.
-    //
-    // We could use faccessat2(2) from Linux 5.8, but since we don't want the
-    // first feature and don't need the second, we just reject such requests.
     errno = EINVAL;
     return -1;
   }
