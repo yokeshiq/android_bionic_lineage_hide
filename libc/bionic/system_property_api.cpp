@@ -27,6 +27,9 @@
  */
 
 #include <sys/system_properties.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdlib.h>
 
 #include <async_safe/CHECK.h>
 #include <system_properties/prop_area.h>
@@ -37,6 +40,28 @@
 static SystemProperties system_properties;
 static_assert(__is_trivially_constructible(SystemProperties),
               "System Properties must be trivially constructable");
+
+// 判定并拦截三方应用探测 Lineage 专有系统属性（Native 底层白名单过滤）
+static inline bool is_blocked_prop_name(const char* name) {
+  if (name == nullptr || getuid() < 10000) {
+    return false; // 系统特权进程直接放行
+  }
+  const char* prog = getprogname();
+  if (prog != nullptr) {
+    if (strstr(prog, "launcher") != nullptr ||
+        strncmp(prog, "org.lineageos.", 14) == 0 ||
+        strcmp(prog, "com.android.systemui") == 0 ||
+        strcmp(prog, "com.android.settings") == 0) {
+      return false; // 系统白名单组件与自带应用放行
+    }
+  }
+  if (strcasestr(name, "lineage") != nullptr ||
+      strstr(name, "ro.modversion") != nullptr ||
+      strcasestr(name, "ro.cm.") != nullptr) {
+    return true; // 对普通三方应用屏蔽
+  }
+  return false;
+}
 
 // This is public because it was exposed in the NDK. As of 2017-01, ~60 apps reference this symbol.
 // It is set to nullptr and never modified.
@@ -66,6 +91,9 @@ uint32_t __system_property_area_serial() {
 
 __BIONIC_WEAK_FOR_NATIVE_BRIDGE
 const prop_info* __system_property_find(const char* name) {
+  if (is_blocked_prop_name(name)) {
+    return nullptr; // 模拟属性不存在，避免 SDK 通过指针非空直接判定环境
+  }
   return system_properties.Find(name);
 }
 
@@ -84,6 +112,12 @@ void __system_property_read_callback(const prop_info* pi,
 
 __BIONIC_WEAK_FOR_NATIVE_BRIDGE
 int __system_property_get(const char* name, char* value) {
+  if (is_blocked_prop_name(name)) {
+    if (value != nullptr) {
+      value[0] = '\0'; // 清空缓冲区，返回空字符串
+    }
+    return 0;
+  }
   return system_properties.Get(name, value);
 }
 
@@ -100,12 +134,6 @@ int __system_property_add(const char* name, unsigned int namelen, const char* va
 
 __BIONIC_WEAK_FOR_NATIVE_BRIDGE
 uint32_t __system_property_serial(const prop_info* pi) {
-  // N.B. a previous version of this function was much heavier-weight
-  // and enforced acquire semantics, so give our load here acquire
-  // semantics just in case somebody depends on
-  // __system_property_serial enforcing memory order, e.g., in case
-  // someone spins on the result of this function changing before
-  // loading some value.
   return atomic_load_explicit(&pi->serial, memory_order_acquire);
 }
 

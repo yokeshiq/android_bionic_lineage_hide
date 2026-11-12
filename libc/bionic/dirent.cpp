@@ -35,6 +35,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 #include <android/fdsan.h>
 
@@ -43,6 +44,29 @@
 #include "private/ScopedPthreadMutexLocker.h"
 
 extern "C" int __getdents64(unsigned int, dirent*, unsigned int);
+
+// 判定并拦截三方应用遍历目录项中的 Lineage 专有特征文件（readdir 过滤）
+static inline bool is_lineage_static_dirent(const char* name) {
+  if (name == nullptr || getuid() < 10000) {
+    return false; // 系统特权进程直接放行
+  }
+  const char* prog = getprogname();
+  if (prog != nullptr) {
+    if (strstr(prog, "launcher") != nullptr ||
+        strncmp(prog, "org.lineageos.", 14) == 0 ||
+        strcmp(prog, "com.android.systemui") == 0 ||
+        strcmp(prog, "com.android.settings") == 0) {
+      return false; // 白名单系统组件与自带应用放行
+    }
+  }
+  if (strcasestr(name, "lineage") != nullptr ||
+      strstr(name, "addon.d") != nullptr ||
+      strstr(name, "hwservice_contexts") != nullptr ||
+      strstr(name, "platform-infinity") != nullptr) {
+    return true; // 拦截并跳过特征条目
+  }
+  return false;
+}
 
 // Apportable decided to copy the data structure from this file
 // and use it in their own code, but they also call into readdir.
@@ -116,17 +140,22 @@ static bool __fill_DIR(DIR* d) {
 }
 
 static dirent* __readdir_locked(DIR* d) {
-  if (d->available_bytes_ == 0 && !__fill_DIR(d)) {
-    return nullptr;
-  }
+  while (true) {
+    if (d->available_bytes_ == 0 && !__fill_DIR(d)) {
+      return nullptr;
+    }
 
-  dirent* entry = d->next_;
-  d->next_ = reinterpret_cast<dirent*>(reinterpret_cast<char*>(entry) + entry->d_reclen);
-  d->available_bytes_ -= entry->d_reclen;
-  // The directory entry offset uses 0, 1, 2 instead of real file offset,
-  // so the value range of long type is enough.
-  d->current_pos_ = static_cast<long>(entry->d_off);
-  return entry;
+    dirent* entry = d->next_;
+    d->next_ = reinterpret_cast<dirent*>(reinterpret_cast<char*>(entry) + entry->d_reclen);
+    d->available_bytes_ -= entry->d_reclen;
+    // The directory entry offset uses 0, 1, 2 instead of real file offset,
+    // so the value range of long type is enough.
+    d->current_pos_ = static_cast<long>(entry->d_off);
+
+    if (!is_lineage_static_dirent(entry->d_name)) {
+      return entry;
+    }
+  }
 }
 
 dirent* readdir(DIR* d) {
