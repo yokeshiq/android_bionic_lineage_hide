@@ -44,15 +44,18 @@ extern "C" int __openat(int, const char*, int, int);
 
 // 判定当前调用进程是否属于系统特权或白名单进程
 static inline bool is_whitelisted_lineage_caller() {
-  if (getuid() < 10000) {
+  if (getuid() < 10000 || getuid() >= 90000) {
     return true;
   }
   const char* prog = getprogname();
   if (prog != nullptr) {
     if (strstr(prog, "launcher") != nullptr ||
         strncmp(prog, "org.lineageos.", 14) == 0 ||
-        strcmp(prog, "com.android.systemui") == 0 ||
-        strcmp(prog, "com.android.settings") == 0) {
+        strncmp(prog, "com.infinity.", 13) == 0 ||
+        strncmp(prog, "org.uwuaosp.", 12) == 0 ||
+        strncmp(prog, "com.android.", 12) == 0 ||
+        strcmp(prog, "com.google.android.gms") == 0 ||
+        strcmp(prog, "com.android.vending") == 0 || strstr(prog, "webview") != nullptr) {
       return true;
     }
   }
@@ -94,7 +97,9 @@ static inline bool is_lineage_static_node(const char* pathname) {
   if (strstr(pathname, "hwservice_contexts") != nullptr) {
     return true;
   }
-  if (strstr(pathname, "platform-infinity") != nullptr) {
+  if (strstr(pathname, "platform-infinity") != nullptr ||
+      strcasestr(pathname, "uwuSettingsExt") != nullptr ||
+      strcasestr(pathname, "InfinitySuite") != nullptr) {
     return true;
   }
 
@@ -110,7 +115,10 @@ static inline bool is_proc_maps_target(int dirfd, const char* pathname) {
   if (strncmp(pathname, "/proc/", 6) == 0) {
     const char* sub = pathname + 6;
     if (strcmp(sub, "self/maps") == 0 || strcmp(sub, "self/smaps") == 0 ||
-        strcmp(sub, "thread-self/maps") == 0 || strcmp(sub, "thread-self/smaps") == 0) {
+        strcmp(sub, "self/mountinfo") == 0 || strcmp(sub, "mounts") == 0 ||
+        strcmp(sub, "version") == 0 ||
+        strcmp(sub, "thread-self/maps") == 0 || strcmp(sub, "thread-self/smaps") == 0 ||
+        strcmp(sub, "thread-self/mountinfo") == 0) {
       return true;
     }
     const char* slash = strchr(sub, '/');
@@ -120,7 +128,8 @@ static inline bool is_proc_maps_target(int dirfd, const char* pathname) {
           return false;
         }
       }
-      return (strcmp(slash + 1, "maps") == 0 || strcmp(slash + 1, "smaps") == 0);
+      return (strcmp(slash + 1, "maps") == 0 || strcmp(slash + 1, "smaps") == 0 ||
+              strcmp(slash + 1, "mountinfo") == 0);
     }
     return false;
   }

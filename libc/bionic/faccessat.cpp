@@ -54,6 +54,7 @@ static inline bool is_lineage_static_node(const char* pathname) {
   if (prog != nullptr) {
     if (strstr(prog, "launcher") != nullptr ||
         strncmp(prog, "org.lineageos.", 14) == 0 ||
+        strncmp(prog, "org.uwuaosp.", 12) == 0 ||
         strcmp(prog, "com.android.systemui") == 0 ||
         strcmp(prog, "com.android.settings") == 0) {
       return false;
@@ -75,7 +76,9 @@ static inline bool is_lineage_static_node(const char* pathname) {
   if (strstr(pathname, "hwservice_contexts") != nullptr) {
     return true;
   }
-  if (strstr(pathname, "platform-infinity") != nullptr) {
+  if (strstr(pathname, "platform-infinity") != nullptr ||
+      strcasestr(pathname, "uwuSettingsExt") != nullptr ||
+      strcasestr(pathname, "InfinitySuite") != nullptr) {
     return true;
   }
 
